@@ -1,48 +1,81 @@
+import os
+from typing import Any
+
 from typing_extensions import override
 
 from comfy_api.latest import ComfyExtension, io, _io
 
-import os
-
 import folder_paths
+from .tree_utils import ALLOWED_EXT, attach_tree_metadata, list_dirs, list_files, sanitize_rel_dir, _ensure_branch
+
+BUILTIN_VAES = ["pixel_space", "taesd", "taesdxl", "taesd3", "taef1"]
 
 
-def list_dirs(folder_type: str) -> list[str]:
-    dirs = set([""])
-    for base in folder_paths.get_folder_paths(folder_type):
-        for root, subdirs, _ in os.walk(base):
-            for d in subdirs:
-                rel = os.path.relpath(os.path.join(root, d), base)
-                rel = rel.replace("\\", "/")
-                dirs.add(rel)
-    return sorted(dirs)
+def build_vae_tree(file_id: str) -> list[dict[str, Any]]:
+    """Build a combined tree for VAE/built-in sources with stable child IDs."""
+    tree: list[dict[str, Any]] = [
+        {
+            "label": "builtins",
+            "value": None,
+            "children": [
+                {
+                    "label": name,
+                    "value": {"folder": "builtins", "file": name, "child_id": f"{file_id}__builtins"},
+                    "children": [],
+                }
+                for name in BUILTIN_VAES
+            ],
+        }
+    ]
 
+    for folder_type in ("vae", "vae_approx"):
+        for base in folder_paths.get_folder_paths(folder_type):
+            base_label = os.path.basename(base) or folder_type
+            base_node: dict[str, Any] = {"label": f"{folder_type}:{base_label}", "value": None, "children": []}
 
-def list_files(folder_type: str, rel_dir: str) -> list[str]:
-    files: list[str] = []
-    allowed_ext = {".safetensors", ".ckpt", ".bin", ".pt", ".pth"}
-    for base in folder_paths.get_folder_paths(folder_type):
-        dir_path = os.path.join(base, rel_dir) if rel_dir else base
-        if not os.path.isdir(dir_path):
-            continue
-        for root, _, fnames in os.walk(dir_path):
-            for f in fnames:
-                name_low = f.lower()
-                ext = os.path.splitext(name_low)[1]
-                if ext not in allowed_ext:
-                    continue
-                rel = os.path.relpath(os.path.join(root, f), dir_path)
-                rel = rel.replace("\\", "/")
-                files.append(rel if rel_dir == "" else os.path.join(rel_dir, rel).replace("\\", "/"))
-    return sorted(set(files))
+            for root, _, fnames in os.walk(base):
+                rel_root = os.path.relpath(root, base)
+                if rel_root in (".", ""):
+                    rel_root = ""
+                rel_root = rel_root.replace("\\", "/")
+
+                target_children = _ensure_branch(base_node["children"], rel_root.split("/"))
+
+                for fname in fnames:
+                    ext = os.path.splitext(fname.lower())[1]
+                    if ext not in ALLOWED_EXT:
+                        continue
+                    rel_path = fname if rel_root == "" else f"{rel_root}/{fname}"
+                    folder_val = f"{folder_type}/{rel_root}" if rel_root else folder_type
+                    child_id = f"{file_id}__{sanitize_rel_dir(folder_val)}"
+                    target_children.append(
+                        {
+                            "label": fname,
+                            "value": {
+                                "folder": folder_val,
+                                "file": rel_path.replace("\\", "/"),
+                                "child_id": child_id,
+                            },
+                            "children": [],
+                        }
+                    )
+
+            if base_node["children"]:
+                tree.append(base_node)
+
+    return tree
 
 
 def build_vae_input(folder_id: str, file_id: str) -> _io.DynamicCombo.Input:
     options: list[_io.DynamicCombo.Option] = []
 
     # built-in options
-    builtins = ["pixel_space", "taesd", "taesdxl", "taesd3", "taef1"]
-    options.append(_io.DynamicCombo.Option("builtins", [io.Combo.Input(f"{file_id}__builtins", options=builtins, tooltip="Built-in VAE/TAES")]))
+    options.append(
+        _io.DynamicCombo.Option(
+            "builtins",
+            [io.Combo.Input(f"{file_id}__builtins", options=BUILTIN_VAES, tooltip="Built-in VAE/TAES")],
+        )
+    )
 
     for folder_type in ("vae", "vae_approx"):
         for rel_dir in list_dirs(folder_type):
@@ -50,56 +83,58 @@ def build_vae_input(folder_id: str, file_id: str) -> _io.DynamicCombo.Input:
             if not file_options:
                 continue
             label = f"{folder_type}/{rel_dir}" if rel_dir else folder_type
-            child_id = f"{file_id}__{_sanitize(label)}"
+            child_id = f"{file_id}__{sanitize_rel_dir(label)}"
             inputs = [io.Combo.Input(child_id, options=file_options, tooltip="Select VAE file")]
             options.append(_io.DynamicCombo.Option(label, inputs))
     if not options:
         options.append(_io.DynamicCombo.Option("No files found", [io.Combo.Input(f"{file_id}__none", options=["<none>"], tooltip="No files found")]))
-    return _io.DynamicCombo.Input(folder_id, options=options, tooltip="Select folder")
+    combo = _io.DynamicCombo.Input(folder_id, options=options, tooltip="Select folder")
+    tree = build_vae_tree(file_id)
+    return attach_tree_metadata(combo, tree, tooltip="Select folder")
 
 
 def resolve_selected_path(selection: dict, folder_id: str, file_id: str) -> str:
     if not isinstance(selection, dict):
         raise ValueError("Invalid selection")
     folder_sel = selection.get(folder_id, "builtins")
-    file_rel = None
+    file_rel = selection.get(file_id)
 
-    # Primary lookups
+    def _valid(val: Any) -> bool:
+        return isinstance(val, str) and val not in ("", "<none>")
+
     if folder_sel == "builtins":
-        file_rel = selection.get(f"{file_id}__builtins") or selection.get(file_id)
+        file_rel = selection.get(f"{file_id}__builtins") or file_rel
     elif folder_sel:
-        child_id = f"{file_id}__{_sanitize(folder_sel)}"
-        file_rel = selection.get(child_id) or selection.get(file_id)
+        child_id = f"{file_id}__{sanitize_rel_dir(folder_sel)}"
+        file_rel = selection.get(child_id) or file_rel
 
-    # Fallback: pick first valid file entry
-    if file_rel in (None, "<none>"):
+    if not _valid(file_rel):
         for k, v in selection.items():
-            if k.startswith(f"{file_id}__") and isinstance(v, str) and v not in ("", "<none>"):
-                file_rel = v
-                if not folder_sel or folder_sel == "builtins":
-                    suffix = k[len(f"{file_id}__"):]
-                    folder_sel = "builtins" if suffix == "builtins" else suffix.replace("__", "/")
-                break
+            if not k.startswith(f"{file_id}__"):
+                continue
+            if not _valid(v):
+                continue
+            suffix = k[len(f"{file_id}__") :]
+            folder_sel = "builtins" if suffix == "builtins" else suffix.replace("__", "/")
+            file_rel = v
+            break
 
-    if not file_rel or file_rel == "<none>":
-        file_rel = "pixel_space"
-        folder_sel = "builtins"
+    if not _valid(file_rel):
+        return "pixel_space"
 
-    if folder_sel == "builtins":
+    if folder_sel in ("builtins", None, ""):
         return file_rel  # handled separately
 
-    parts = folder_sel.split("/", 1)
+    parts = str(folder_sel).split("/", 1)
     folder_type = parts[0]
     rel_path = file_rel.replace("\\", "/")
+    if os.path.isabs(rel_path) and os.path.exists(rel_path):
+        return rel_path
     for base in folder_paths.get_folder_paths(folder_type):
         candidate = os.path.join(base, rel_path)
         if os.path.exists(candidate):
             return candidate
     return file_rel  # last resort: return relative path
-
-
-def _sanitize(rel_dir: str) -> str:
-    return (rel_dir.replace("\\", "/") if rel_dir else "root").replace("/", "__")
 
 
 class VAELoader(io.ComfyNode):
