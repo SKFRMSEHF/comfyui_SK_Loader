@@ -1,8 +1,9 @@
-// SK Loader tree selector enhancer
-import { app } from "../../scripts/app.js";
+// SK Loader tree selector enhancer (ES module loaded by ComfyUI)
+// Note: module path is relative to /custom_nodes/<ext>/web/
+import { app } from "../../../scripts/app.js";
 
 function getTree(widget) {
-  return (widget?.extra && widget.extra.sk_tree) || widget?._sk_tree || null;
+  return (widget && widget.extra && widget.extra.sk_tree) || widget?._sk_tree || null;
 }
 
 function makeMenuItems(tree, onSelect) {
@@ -36,15 +37,18 @@ function valueToPath(val) {
   if (!file) return null;
   const folder = val.folder;
   if (!folder || folder === "root") return file;
-  return `${folder.replace(/^\\/+|\\/+$|^\\/+/, "")}/${file}`;
+  const cleanFolder = folder.replace(/^[/\\]+|[/\\]+$/g, "");
+  return `${cleanFolder}/${file}`;
 }
 
 function attachTreeHandler(node) {
-  if (!node.widgets?.length) return;
+  if (!node.widgets || !node.widgets.length) return;
   for (const widget of node.widgets) {
-    if (widget.type !== "combo") continue;
+    if (!widget || widget.type !== "combo") continue;
+    if (widget._sk_tree_bound) continue;
     const tree = getTree(widget);
     if (!tree) continue;
+    widget._sk_tree_bound = true;
 
     const prevMouseDown = widget.onMouseDown;
     widget.onMouseDown = function (e, pos, graphcanvas) {
@@ -63,7 +67,7 @@ function attachTreeHandler(node) {
           className: "dark",
           title: widget.name || "Select",
         });
-        return true; // swallow
+        return true; // swallow default combo
       }
       if (prevMouseDown) return prevMouseDown.call(widget, e, pos, graphcanvas);
       return false;
@@ -71,9 +75,22 @@ function attachTreeHandler(node) {
   }
 }
 
+function attachExistingNodes() {
+  const nodes = app?.graph?._nodes;
+  if (!nodes) return;
+  for (const n of nodes) {
+    attachTreeHandler(n);
+  }
+}
+
 app.registerExtension({
   name: "sk_loader.tree_selector",
-  async nodeCreated(node) {
+  setup() {
+    // Attach once after initial graph load.
+    setTimeout(attachExistingNodes, 50);
+    setTimeout(attachExistingNodes, 250);
+  },
+  nodeCreated(node) {
     attachTreeHandler(node);
   },
 });
