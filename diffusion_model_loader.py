@@ -1,27 +1,21 @@
 from typing_extensions import override
 
-from comfy_api.latest import ComfyExtension, io, _io
+from comfy_api.latest import ComfyExtension, io
 
 import folder_paths
 
-from .tree_utils import attach_tree_metadata, build_tree, list_dirs, list_files, resolve_selected_path, sanitize_rel_dir
+from .tree_utils import attach_tree_metadata, build_tree, list_files, resolve_selected_path
 
 
-def build_folder_file_input(folder_id: str, file_id: str, folder_type: str, tooltip: str | None = None) -> _io.DynamicCombo.Input:
-    options: list[_io.DynamicCombo.Option] = []
-    for rel_dir in list_dirs(folder_type):
-        file_options = list_files(folder_type, rel_dir)
-        if not file_options:
-            continue
-        child_id = f"{file_id}__{sanitize_rel_dir(rel_dir)}"
-        inputs = [io.Combo.Input(child_id, options=file_options, tooltip=tooltip)]
-        options.append(_io.DynamicCombo.Option(rel_dir if rel_dir else "root", inputs))
+def build_file_input(input_id: str, folder_type: str, tooltip: str | None = None) -> io.Combo.Input:
+    options: list[str] = []
+    for rel_path in list_files(folder_type, ""):
+        options.append(rel_path)
     if not options:
-        child_id = f"{file_id}__none"
-        options.append(_io.DynamicCombo.Option("No files found", [io.Combo.Input(child_id, options=["<none>"], tooltip="No files found")]))
-    combo = _io.DynamicCombo.Input(folder_id, options=options, tooltip="Select folder")
-    tree = build_tree(folder_type, file_id)
-    return attach_tree_metadata(combo, tree, tooltip="Select folder")
+        options = ["<none>"]
+    combo = io.Combo.Input(input_id, options=sorted(set(options)), tooltip=tooltip or "Select file")
+    tree = build_tree(folder_type, input_id)
+    return attach_tree_metadata(combo, tree, tooltip=tooltip or "Select file")
 
 
 class UNETLoader(io.ComfyNode):
@@ -34,7 +28,7 @@ class UNETLoader(io.ComfyNode):
             display_name="[SK] Diffusion Model",
             category="SK Loader/Advanced",
             inputs=[
-                build_folder_file_input("unet_folder", "unet_name", "diffusion_models"),
+                build_file_input("unet", "diffusion_models"),
                 io.Combo.Input(
                     "weight_dtype",
                     options=["default", "fp8_e4m3fn", "fp8_e4m3fn_fast", "fp8_e5m2"],
@@ -46,7 +40,7 @@ class UNETLoader(io.ComfyNode):
         )
 
     @classmethod
-    def execute(cls, unet_folder: dict, weight_dtype: str) -> io.NodeOutput:
+    def execute(cls, unet: dict | str, weight_dtype: str) -> io.NodeOutput:
         import torch
         import comfy.sd
 
@@ -59,7 +53,7 @@ class UNETLoader(io.ComfyNode):
         elif weight_dtype == "fp8_e5m2":
             model_options["dtype"] = torch.float8_e5m2
 
-        unet_path = resolve_selected_path("diffusion_models", unet_folder, "unet_folder", "unet_name")
+        unet_path = resolve_selected_path("diffusion_models", unet, "unet", "unet")
         model = comfy.sd.load_diffusion_model(unet_path, model_options=model_options)
         return io.NodeOutput(model)
 

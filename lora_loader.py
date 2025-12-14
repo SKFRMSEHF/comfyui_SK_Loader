@@ -1,25 +1,20 @@
 from typing_extensions import override
 
-from comfy_api.latest import ComfyExtension, io, _io
+from comfy_api.latest import ComfyExtension, io
 
-from .tree_utils import attach_tree_metadata, build_tree, list_dirs, list_files, resolve_selected_path, sanitize_rel_dir
+from .tree_utils import attach_tree_metadata, build_tree, list_files, resolve_selected_path
 
 
-def build_folder_file_input(folder_id: str, file_id: str, folder_type: str, tooltip: str | None = None) -> _io.DynamicCombo.Input:
-    options: list[_io.DynamicCombo.Option] = []
-    for rel_dir in list_dirs(folder_type):
-        file_options = list_files(folder_type, rel_dir)
-        if not file_options:
-            continue
-        child_id = f"{file_id}__{sanitize_rel_dir(rel_dir)}"
-        inputs = [io.Combo.Input(child_id, options=file_options, tooltip=tooltip)]
-        options.append(_io.DynamicCombo.Option(rel_dir if rel_dir else "root", inputs))
+def build_file_input(input_id: str, folder_type: str, tooltip: str | None = None) -> io.Combo.Input:
+    """Single combo with tree metadata over all files."""
+    options: list[str] = []
+    for rel_path in list_files(folder_type, ""):
+        options.append(rel_path)
     if not options:
-        child_id = f"{file_id}__none"
-        options.append(_io.DynamicCombo.Option("No files found", [io.Combo.Input(child_id, options=["<none>"], tooltip="No files found")]))
-    combo = _io.DynamicCombo.Input(folder_id, options=options, tooltip="Select folder")
-    tree = build_tree(folder_type, file_id)
-    return attach_tree_metadata(combo, tree, tooltip="Select folder")
+        options = ["<none>"]
+    combo = io.Combo.Input(input_id, options=sorted(set(options)), tooltip=tooltip or "Select file")
+    tree = build_tree(folder_type, input_id)
+    return attach_tree_metadata(combo, tree, tooltip=tooltip or "Select file")
 
 
 def build_lora_slot_inputs(idx: int) -> list:
@@ -28,7 +23,7 @@ def build_lora_slot_inputs(idx: int) -> list:
     label = f"LoRA #{idx}"
     return [
         io.Boolean.Input(f"{prefix}_enabled", default=False, tooltip=f"Enable {label}"),
-        build_folder_file_input(f"{prefix}_folder", f"{prefix}_name", "loras", tooltip=f"Select {label}"),
+        build_file_input(prefix, "loras", tooltip=f"Select {label}"),
         io.Float.Input(
             f"{prefix}_strength_model",
             default=1.0,
@@ -60,7 +55,7 @@ class LoraLoader(io.ComfyNode):
             inputs=[
                 io.Model.Input("model", tooltip="The diffusion model the LoRA will be applied to."),
                 io.Clip.Input("clip", tooltip="The CLIP model the LoRA will be applied to."),
-                build_folder_file_input("lora_folder", "lora_name", "loras", tooltip="The name of the LoRA."),
+                build_file_input("lora", "loras", tooltip="The name of the LoRA."),
                 io.Float.Input(
                     "strength_model",
                     default=1.0,
@@ -86,20 +81,20 @@ class LoraLoader(io.ComfyNode):
         )
 
     @classmethod
-    def _apply_lora(cls, model, clip, selection: dict, strength_model: float, strength_clip: float):
+    def _apply_lora(cls, model, clip, selection: dict | str, strength_model: float, strength_clip: float):
         import comfy.sd
         import comfy.utils
 
         if strength_model == 0 and strength_clip == 0:
             return model, clip
 
-        lora_path = resolve_selected_path("loras", selection, "lora_folder", "lora_name")
+        lora_path = resolve_selected_path("loras", selection, "lora", "lora")
         loaded = comfy.utils.load_torch_file(lora_path, safe_load=True)
         return comfy.sd.load_lora_for_models(model, clip, loaded, strength_model, strength_clip)
 
     @classmethod
-    def execute(cls, model, clip, lora_folder: dict, strength_model: float, strength_clip: float) -> io.NodeOutput:
-        model_lora, clip_lora = cls._apply_lora(model, clip, lora_folder, strength_model, strength_clip)
+    def execute(cls, model, clip, lora: dict | str, strength_model: float, strength_clip: float) -> io.NodeOutput:
+        model_lora, clip_lora = cls._apply_lora(model, clip, lora, strength_model, strength_clip)
         return io.NodeOutput(model_lora, clip_lora)
 
 
@@ -114,7 +109,7 @@ class LoraLoaderModelOnly(LoraLoader):
             category="SK Loader",
             inputs=[
                 io.Model.Input("model"),
-                build_folder_file_input("lora_folder", "lora_name", "loras"),
+                build_file_input("lora", "loras"),
                 io.Float.Input(
                     "strength_model",
                     default=1.0,
@@ -129,8 +124,8 @@ class LoraLoaderModelOnly(LoraLoader):
         )
 
     @classmethod
-    def execute(cls, model, lora_folder: dict, strength_model: float) -> io.NodeOutput:
-        model_lora, _ = cls._apply_lora(model, None, lora_folder, strength_model, 0)
+    def execute(cls, model, lora: dict | str, strength_model: float) -> io.NodeOutput:
+        model_lora, _ = cls._apply_lora(model, None, lora, strength_model, 0)
         return io.NodeOutput(model_lora)
 
 
@@ -170,8 +165,8 @@ class PowerLoraLoader(io.ComfyNode):
             if not enabled:
                 continue
 
-            selection = kwargs.get(f"lora_{idx}_folder")
-            if not isinstance(selection, dict):
+            selection = kwargs.get(f"lora_{idx}")
+            if not isinstance(selection, (dict, str)):
                 continue
 
             strength_model = float(kwargs.get(f"lora_{idx}_strength_model", 1.0))
@@ -180,7 +175,7 @@ class PowerLoraLoader(io.ComfyNode):
                 continue
 
             try:
-                lora_path = resolve_selected_path("loras", selection, f"lora_{idx}_folder", f"lora_{idx}_name")
+                lora_path = resolve_selected_path("loras", selection, f"lora_{idx}", f"lora_{idx}")
             except FileNotFoundError:
                 continue
 

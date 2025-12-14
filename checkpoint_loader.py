@@ -1,27 +1,21 @@
 from typing_extensions import override
 
-from comfy_api.latest import ComfyExtension, io, _io
+from comfy_api.latest import ComfyExtension, io
 
 import folder_paths
 
-from .tree_utils import attach_tree_metadata, build_tree, list_dirs, list_files, resolve_selected_path, sanitize_rel_dir
+from .tree_utils import attach_tree_metadata, build_tree, list_files, resolve_selected_path
 
 
-def build_folder_file_input(folder_id: str, file_id: str, folder_type: str, tooltip: str | None = None) -> _io.DynamicCombo.Input:
-    options: list[_io.DynamicCombo.Option] = []
-    for rel_dir in list_dirs(folder_type):
-        file_options = list_files(folder_type, rel_dir)
-        if not file_options:
-            continue
-        child_id = f"{file_id}__{sanitize_rel_dir(rel_dir)}"
-        inputs = [io.Combo.Input(child_id, options=file_options, tooltip=tooltip)]
-        options.append(_io.DynamicCombo.Option(rel_dir if rel_dir else "root", inputs))
+def build_file_input(input_id: str, folder_type: str, tooltip: str | None = None) -> io.Combo.Input:
+    options: list[str] = []
+    for rel_path in list_files(folder_type, ""):
+        options.append(rel_path)
     if not options:
-        child_id = f"{file_id}__none"
-        options.append(_io.DynamicCombo.Option("No files found", [io.Combo.Input(child_id, options=["<none>"], tooltip="No files found")]))
-    combo = _io.DynamicCombo.Input(folder_id, options=options, tooltip="Select folder")
-    tree = build_tree(folder_type, file_id)
-    return attach_tree_metadata(combo, tree, tooltip="Select folder")
+        options = ["<none>"]
+    combo = io.Combo.Input(input_id, options=sorted(set(options)), tooltip=tooltip or "Select file")
+    tree = build_tree(folder_type, input_id)
+    return attach_tree_metadata(combo, tree, tooltip=tooltip or "Select file")
 
 
 class CheckpointLoader(io.ComfyNode):
@@ -35,7 +29,7 @@ class CheckpointLoader(io.ComfyNode):
             category="SK Loader/Advanced",
             inputs=[
                 io.Combo.Input("config_name", options=folder_paths.get_filename_list("configs")),
-                build_folder_file_input("ckpt_folder", "ckpt_name", "checkpoints"),
+                build_file_input("ckpt", "checkpoints"),
             ],
             outputs=[
                 io.Model.Output(),
@@ -45,11 +39,11 @@ class CheckpointLoader(io.ComfyNode):
         )
 
     @classmethod
-    def execute(cls, config_name: str, ckpt_folder: dict) -> io.NodeOutput:
+    def execute(cls, config_name: str, ckpt: dict | str) -> io.NodeOutput:
         import comfy.sd
 
         config_path = folder_paths.get_full_path("configs", config_name)
-        ckpt_path = resolve_selected_path("checkpoints", ckpt_folder, "ckpt_folder", "ckpt_name")
+        ckpt_path = resolve_selected_path("checkpoints", ckpt, "ckpt", "ckpt")
         loaded = comfy.sd.load_checkpoint(
             config_path,
             ckpt_path,
@@ -70,7 +64,7 @@ class CheckpointLoaderSimple(io.ComfyNode):
             display_name="[SK] Checkpoint",
             category="SK Loader",
             inputs=[
-                build_folder_file_input("ckpt_folder", "ckpt_name", "checkpoints", tooltip="The checkpoint (model) to load."),
+                build_file_input("ckpt", "checkpoints", tooltip="The checkpoint (model) to load."),
             ],
             outputs=[
                 io.Model.Output(),
@@ -81,10 +75,10 @@ class CheckpointLoaderSimple(io.ComfyNode):
         )
 
     @classmethod
-    def execute(cls, ckpt_folder: dict) -> io.NodeOutput:
+    def execute(cls, ckpt: dict | str) -> io.NodeOutput:
         import comfy.sd
 
-        ckpt_path = resolve_selected_path("checkpoints", ckpt_folder, "ckpt_folder", "ckpt_name")
+        ckpt_path = resolve_selected_path("checkpoints", ckpt, "ckpt", "ckpt")
         out = comfy.sd.load_checkpoint_guess_config(
             ckpt_path,
             output_vae=True,
@@ -104,7 +98,7 @@ class unCLIPCheckpointLoader(io.ComfyNode):
             display_name="[SK] unCLIP Checkpoint",
             category="SK Loader",
             inputs=[
-                build_folder_file_input("ckpt_folder", "ckpt_name", "checkpoints"),
+                build_file_input("ckpt", "checkpoints"),
             ],
             outputs=[
                 io.Model.Output(),
@@ -115,10 +109,10 @@ class unCLIPCheckpointLoader(io.ComfyNode):
         )
 
     @classmethod
-    def execute(cls, ckpt_folder: dict) -> io.NodeOutput:
+    def execute(cls, ckpt: dict | str) -> io.NodeOutput:
         import comfy.sd
 
-        ckpt_path = resolve_selected_path("checkpoints", ckpt_folder, "ckpt_folder", "ckpt_name")
+        ckpt_path = resolve_selected_path("checkpoints", ckpt, "ckpt", "ckpt")
         out = comfy.sd.load_checkpoint_guess_config(
             ckpt_path,
             output_vae=True,

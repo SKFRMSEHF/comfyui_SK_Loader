@@ -3,7 +3,7 @@ from typing import Any
 
 from typing_extensions import override
 
-from comfy_api.latest import ComfyExtension, io, _io
+from comfy_api.latest import ComfyExtension, io
 
 import folder_paths
 from .tree_utils import ALLOWED_EXT, attach_tree_metadata, list_dirs, list_files, sanitize_rel_dir, _ensure_branch
@@ -66,34 +66,43 @@ def build_vae_tree(file_id: str) -> list[dict[str, Any]]:
     return tree
 
 
-def build_vae_input(folder_id: str, file_id: str) -> _io.DynamicCombo.Input:
-    options: list[_io.DynamicCombo.Option] = []
+def build_vae_input(input_id: str) -> io.Combo.Input:
+    """Single select with tree metadata; options = builtins + all vae/vae_approx files."""
+    options: list[str] = []
 
     # built-in options
-    options.append(
-        _io.DynamicCombo.Option(
-            "builtins",
-            [io.Combo.Input(f"{file_id}__builtins", options=BUILTIN_VAES, tooltip="Built-in VAE/TAES")],
-        )
-    )
+    options.extend(BUILTIN_VAES)
 
     for folder_type in ("vae", "vae_approx"):
-        for rel_dir in list_dirs(folder_type):
-            file_options = list_files(folder_type, rel_dir)
-            if not file_options:
-                continue
-            label = f"{folder_type}/{rel_dir}" if rel_dir else folder_type
-            child_id = f"{file_id}__{sanitize_rel_dir(label)}"
-            inputs = [io.Combo.Input(child_id, options=file_options, tooltip="Select VAE file")]
-            options.append(_io.DynamicCombo.Option(label, inputs))
+        for rel_path in list_files(folder_type, ""):
+            options.append(f"{folder_type}/{rel_path}")
+
     if not options:
-        options.append(_io.DynamicCombo.Option("No files found", [io.Combo.Input(f"{file_id}__none", options=["<none>"], tooltip="No files found")]))
-    combo = _io.DynamicCombo.Input(folder_id, options=options, tooltip="Select folder")
-    tree = build_vae_tree(file_id)
-    return attach_tree_metadata(combo, tree, tooltip="Select folder")
+        options = ["<none>"]
+
+    combo = io.Combo.Input(input_id, options=sorted(set(options)), tooltip="Select VAE")
+    tree = build_vae_tree(input_id)
+    return attach_tree_metadata(combo, tree, tooltip="Select VAE")
 
 
-def resolve_selected_path(selection: dict, folder_id: str, file_id: str) -> str:
+def resolve_selected_path(selection: dict | str, folder_id: str = "vae_folder", file_id: str = "vae_name") -> str:
+    """Resolve tree-aware single select or legacy two-combo selection to a usable path or builtin."""
+    if isinstance(selection, str):
+        rel = selection.strip()
+        if rel in BUILTIN_VAES:
+            return rel
+        rel = rel.replace("\\", "/")
+        if os.path.isabs(rel) and os.path.exists(rel):
+            return rel
+        for folder_type in ("vae", "vae_approx"):
+            rel_no_prefix = rel[len(folder_type) + 1 :] if rel.startswith(f"{folder_type}/") else rel
+            for candidate_rel in (rel_no_prefix, rel):
+                for base in folder_paths.get_folder_paths(folder_type):
+                    candidate = os.path.join(base, candidate_rel)
+                    if os.path.exists(candidate):
+                        return candidate
+        return rel  # last resort
+
     if not isinstance(selection, dict):
         raise ValueError("Invalid selection")
     folder_sel = selection.get(folder_id, "builtins")
@@ -182,7 +191,7 @@ class VAELoader(io.ComfyNode):
             display_name="[SK] VAE",
             category="SK Loader",
             inputs=[
-                build_vae_input("vae_folder", "vae_name"),
+                build_vae_input("vae"),
             ],
             outputs=[
                 io.Vae.Output(),
@@ -191,12 +200,12 @@ class VAELoader(io.ComfyNode):
 
     # TODO: scale factor?
     @classmethod
-    def execute(cls, vae_folder: dict) -> io.NodeOutput:
+    def execute(cls, vae: dict | str) -> io.NodeOutput:
         import torch
         import comfy.sd
         import comfy.utils
 
-        resolved = resolve_selected_path(vae_folder, "vae_folder", "vae_name")
+        resolved = resolve_selected_path(vae, "vae_folder", "vae_name")
 
         # Check if it's a builtin VAE
         if resolved in ("pixel_space", "taesd", "taesdxl", "taesd3", "taef1"):

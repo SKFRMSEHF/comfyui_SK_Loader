@@ -105,10 +105,29 @@ def build_tree(folder_type: str, file_id: str, extra_roots: list[dict[str, Any]]
     return tree
 
 
-def resolve_selected_path(folder_type: str, selection: dict, folder_id: str, file_id: str) -> str:
-    """Resolve a selection map (combo or tree UI) to an absolute path under the given folder type."""
+def resolve_selected_path(folder_type: str, selection: dict | str, folder_id: str | None = None, file_id: str | None = None) -> str:
+    """Resolve a selection (string or legacy dict) to an absolute path under the given folder type."""
+    # Simple string selection: try absolute, then relative to the folder_type roots.
+    if isinstance(selection, str):
+        rel = selection.strip()
+        if rel in ("", "<none>"):
+            raise FileNotFoundError("No file selected")
+        rel = rel.replace("\\", "/")
+        if os.path.isabs(rel) and os.path.exists(rel):
+            return rel
+        rel_no_prefix = rel[len(folder_type) + 1 :] if rel.startswith(f"{folder_type}/") else rel
+        for candidate_rel in (rel_no_prefix, rel):
+            for base in folder_paths.get_folder_paths(folder_type):
+                candidate = os.path.join(base, candidate_rel)
+                if os.path.exists(candidate):
+                    return candidate
+        return rel  # last resort
+
     if not isinstance(selection, dict):
         raise ValueError("Invalid selection")
+
+    folder_id = folder_id or ""
+    file_id = file_id or ""
 
     def _valid(val: Any) -> bool:
         return isinstance(val, str) and val not in ("", "<none>")
