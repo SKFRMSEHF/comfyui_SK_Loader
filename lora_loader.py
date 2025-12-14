@@ -27,7 +27,7 @@ def build_lora_slot_inputs(idx: int) -> list:
     prefix = f"lora_{idx}"
     label = f"LoRA #{idx}"
     return [
-        io.Bool.Input(f"{prefix}_enabled", default=False, tooltip=f"Enable {label}"),
+        io.Boolean.Input(f"{prefix}_enabled", default=False, tooltip=f"Enable {label}"),
         build_folder_file_input(f"{prefix}_folder", f"{prefix}_name", "loras", tooltip=f"Select {label}"),
         io.Float.Input(
             f"{prefix}_strength_model",
