@@ -1,9 +1,25 @@
 // SK Loader tree selector enhancer (ES module loaded by ComfyUI)
-// Note: module path is relative to /custom_nodes/<ext>/web/
-import { app } from "../../../scripts/app.js";
+// Path mirrors common custom-node scripts usage.
+import { app } from "../../scripts/app.js";
+
+const TREE_SENTINEL = "[[SK_TREE::";
 
 function getTree(widget) {
-  return (widget && widget.extra && widget.extra.sk_tree) || widget?._sk_tree || null;
+  const metaTree = (widget && widget.extra && widget.extra.sk_tree) || widget?.metadata?.sk_tree || widget?._sk_tree;
+  if (metaTree) return metaTree;
+  const tip = widget?.tooltip;
+  if (typeof tip === "string") {
+    const idx = tip.indexOf(TREE_SENTINEL);
+    if (idx >= 0) {
+      const json = tip.substring(idx + TREE_SENTINEL.length).split("]]")[0];
+      try {
+        return JSON.parse(json);
+      } catch (e) {
+        console.warn("SK Loader: failed to parse tree JSON from tooltip", e);
+      }
+    }
+  }
+  return null;
 }
 
 function makeMenuItems(tree, onSelect) {
